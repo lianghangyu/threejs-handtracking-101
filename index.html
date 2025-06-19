@@ -64,6 +64,17 @@
             font-family: Arial, sans-serif;
             z-index: 10;
         }
+        #score {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: #fff;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+            font-family: Arial, sans-serif;
+            z-index: 10;
+        }
 
         #links-para{
             position: absolute;
@@ -86,6 +97,7 @@
         <canvas id="canvas"></canvas>
         <div id="three-canvas"></div>
         <div id="status">Loading MediaPipe...</div>
+        <div id="score">Score: 0</div>
     </div>
 
     <p id="links-para"><a href="https://x.com/measure_plan" target="_blank">Twitter</a> | <a href="https://www.instagram.com/stereo.drift/" target="_blank">Instagram</a> | <a href="https://github.com/collidingScopes/threejs-handtracking-101" target="_blank">Source Code</a> | <a href="https://buymeacoffee.com/stereodrift" target="_blank">❤️</a></p>
@@ -94,6 +106,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128/examples/js/loaders/GLTFLoader.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const videoElement = document.getElementById('webcam');
@@ -102,10 +115,17 @@
             const statusElement = document.getElementById('status');
             const threeContainer = document.getElementById('three-canvas');
             
+            scoreElement = document.getElementById("score");
             // Three.js variables
             let scene, camera, renderer;
             let sphere, solidMesh, wireframeMesh;
             
+            let leftGlove, rightGlove, gloveModel;
+            let cubes = [];
+            let cubeSpawnInterval;
+            let score = 0;
+            let scoreElement;
+            let hitLine;
             // Hand tracking variables
             let rightHandActive = false;
             let leftHandActive = false;
@@ -236,6 +256,9 @@
                 const ambientLight = new THREE.AmbientLight(0xffffff, 1.0);
                 scene.add(ambientLight);
                 
+                loadGloves();
+                createHitLine();
+                cubeSpawnInterval = setInterval(spawnCube, 1500);
                 // Start animation loop
                 animate();
             }
@@ -262,6 +285,8 @@
                 
                 // Render the scene
                 renderer.render(scene, camera);
+                updateCubes();
+                checkCollisions();
             }
             
             // Calculate distance between two 3D points
@@ -296,6 +321,86 @@
                 return distance < currentSize * 1; // Add some buffer for easier interaction
             }
             
+            function normalizedToWorld(point) {
+                return new THREE.Vector3(
+                    (point.x - 0.5) * 10,
+                    (0.5 - point.y) * 10,
+                    (0.5 - point.z) * 10
+                );
+            }
+
+            function loadGloves() {
+                const loader = new THREE.GLTFLoader();
+                loader.load("boxing_glove_left.glb", (gltf) => {
+                    gloveModel = gltf.scene;
+                    gloveModel.traverse(obj => {
+                        if (obj.isMesh) {
+                            obj.material.transparent = true;
+                            obj.material.opacity = 0.7;
+                        }
+                    });
+                    leftGlove = gloveModel.clone();
+                    scene.add(leftGlove);
+                    rightGlove = gloveModel.clone();
+                    rightGlove.scale.x *= -1;
+                    scene.add(rightGlove);
+                });
+            }
+
+            function createHitLine() {
+                const lineGeometry = new THREE.BufferGeometry().setFromPoints([
+                    new THREE.Vector3(-5, -1, 0),
+                    new THREE.Vector3(5, -1, 0)
+                ]);
+                const material = new THREE.LineBasicMaterial({ color: 0xff0000 });
+                hitLine = new THREE.Line(lineGeometry, material);
+                scene.add(hitLine);
+            }
+
+            function spawnCube() {
+                const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+                const material = new THREE.MeshBasicMaterial({ color: Math.random() * 0xffffff });
+                const cube = new THREE.Mesh(geometry, material);
+                cube.position.set(Math.random() < 0.5 ? -1.5 : 1.5, 0, -8);
+                cube.userData = { hittable: false, hitExpire: 0 };
+                cubes.push(cube);
+                scene.add(cube);
+            }
+
+            function updateCubes() {
+                const speed = 0.05;
+                for (let i = cubes.length - 1; i >= 0; i--) {
+                    const cube = cubes[i];
+                    cube.position.z += speed;
+                    if (!cube.userData.hittable && cube.position.z >= hitLine.position.z) {
+                        cube.userData.hittable = true;
+                        cube.userData.hitExpire = Date.now() + 800;
+                    }
+                    if (cube.userData.hittable && Date.now() > cube.userData.hitExpire) {
+                        scene.remove(cube);
+                        cubes.splice(i, 1);
+                        continue;
+                    }
+                    if (cube.position.z > camera.position.z + 1) {
+                        scene.remove(cube);
+                        cubes.splice(i, 1);
+                    }
+                }
+            }
+
+            function checkCollisions() {
+                for (let i = cubes.length - 1; i >= 0; i--) {
+                    const cube = cubes[i];
+                    if (!cube.userData.hittable) continue;
+                    if ((leftGlove && cube.position.distanceTo(leftGlove.position) < 0.6) ||
+                        (rightGlove && cube.position.distanceTo(rightGlove.position) < 0.6)) {
+                        scene.remove(cube);
+                        cubes.splice(i, 1);
+                        score++;
+                        if (scoreElement) scoreElement.textContent = `Score: ${score}`;
+                    }
+                }
+            }
             // Initialize MediaPipe Hands
             async function initMediaPipeHands() {
                 statusElement.textContent = 'Initializing MediaPipe Hands...';
@@ -411,6 +516,13 @@
                         // Draw the hand landmarks with appropriate color
                         drawLandmarks(landmarks, isLeftHand);
                         
+                        const wrist = landmarks[0];
+                        const worldPos = normalizedToWorld(wrist);
+                        if (isLeftHand && leftGlove) {
+                            leftGlove.position.copy(worldPos);
+                        } else if (!isLeftHand && rightGlove) {
+                            rightGlove.position.copy(worldPos);
+                        }
                         if (!isLeftHand) {
                             // RIGHT HAND: Control sphere size with thumb-index distance
                             // Get thumb tip and index finger tip positions
